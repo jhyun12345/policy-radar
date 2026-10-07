@@ -2,8 +2,9 @@ name: 정책 레이더 자동 업데이트
 
 on:
   schedule:
-    - cron: '0 0 * * 2,3,4'
-  workflow_dispatch:
+    # 화·목 오전 9시(KST) = UTC 0시
+    - cron: '0 0 * * 2,4'
+  workflow_dispatch:   # Actions 탭에서 "Run workflow" 버튼으로 수동 실행
 
 permissions:
   contents: write
@@ -12,7 +13,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 45   # 조사→작성→검증 3단계라 이전보다 오래 걸립니다
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
