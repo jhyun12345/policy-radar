@@ -13,7 +13,8 @@
 
 const fs = require('fs');
 
-const MODEL = process.env.RADAR_MODEL || 'claude-sonnet-5';
+// 모델 이름: 정확한 API 모델 ID여야 합니다. 바꾸고 싶으면 이 줄의 따옴표 안만 고치세요.
+const MODEL = process.env.RADAR_MODEL || 'claude-sonnet-5-5';
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY || '';
@@ -361,7 +362,8 @@ async function main() {
   const { findings, gaps } = await runResearch(ctx);
   console.log(`[1단계 완료] 근거 ${findings.length}건, 조사 공백 ${gaps.length}건`);
   if (findings.length < 15) {
-    console.error('근거가 너무 적어 data.json을 갱신하지 않습니다. 조사 공백:', gaps);
+    console.error('근거가 너무 적어 data.json을 갱신하지 않습니다. (근거 ' + findings.length + '건)');
+    console.error('조사 공백(원인) 목록:\n - ' + (gaps.length ? gaps.join('\n - ') : '없음'));
     process.exit(1);
   }
 
