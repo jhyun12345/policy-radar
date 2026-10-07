@@ -1,4 +1,4 @@
-// 이 스크립트는 GitHub Actions가 화/수/목 오전 9시(KST)에 자동으로 실행합니다.
+// 이 스크립트는 GitHub Actions가 화/목 오전 9시(KST)에 자동으로 실행합니다.
 //
 // [왜 단계를 나눴나] 한 번에 "검색+정리+JSON 작성"을 시키면 아래 문제가 반복됐습니다.
 //   - 지난번 카드를 고쳐 쓰다가 틀린 내용(이미 바뀐 인선 상황, 수치)이 그대로 이월됨
@@ -77,9 +77,11 @@ function collectUrls(blocks) {
 }
 
 let lastStop = '';
-async function callClaude({ prompt, tools, maxTokens = 8000, betaHeaders = [] }) {
+let lastBlocks = '';
+async function callClaude({ prompt, tools, maxTokens = 8000, betaHeaders = [], noThinking = false }) {
   const messages = [{ role: 'user', content: prompt }];
   let allText = '';
+  let useNoThinking = noThinking;
   for (let turn = 0; turn < 8; turn++) {
     const headers = {
       'Content-Type': 'application/json',
@@ -89,12 +91,18 @@ async function callClaude({ prompt, tools, maxTokens = 8000, betaHeaders = [] })
     if (betaHeaders.length) headers['anthropic-beta'] = betaHeaders.join(',');
     const body = { model: MODEL, max_tokens: maxTokens, messages };
     if (tools && tools.length) body.tools = tools;
+    if (useNoThinking) body.thinking = { type: 'disabled' }; // 글쓰기 단계: 생각에 분량을 다 쓰지 않게 함
 
     const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(`Anthropic API 오류 (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      if (useNoThinking && /thinking/i.test(errText)) { useNoThinking = false; turn--; continue; } // 이 모델이 옵션을 거부하면 옵션 없이 재시도
+      throw new Error(`Anthropic API 오류 (${res.status}): ${errText}`);
+    }
     const data = await res.json();
     collectUrls(data.content);
     lastStop = data.stop_reason || '';
+    lastBlocks = (data.content || []).map(b => b.type).join(',');
     allText += (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n') + '\n';
 
     if (data.stop_reason === 'pause_turn') {
@@ -142,9 +150,9 @@ function extractJson(text, open = '{', close = '}') {
   return best ? best.value : null;
 }
 
-const SEARCH_TOOLS = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }];
+const SEARCH_TOOLS = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }];
 // 기사 "본문"을 읽을 수 있는 도구(베타). 지원되지 않으면 검색만으로 자동 대체합니다.
-const FETCH_TOOL = { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 8 };
+const FETCH_TOOL = { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 4 };
 const FETCH_BETA = ['web-fetch-2025-09-10'];
 
 async function callWithResearchTools(args) {
@@ -269,69 +277,104 @@ async function runResearch(ctx) {
 }
 
 // ------------------------------------------------------------
-// 4) 2단계 — 카드 작성 (검색 없이, 1단계 근거만 사용)
+// 4) 2단계 — 주차별 카드 작성 (검색 없이, 1단계 근거만 사용)
+//    한 번에 전체를 쓰게 하면 답이 너무 길어져 잘리거나 비어버리므로, 주차마다 따로 씁니다.
+//    주차 이름·기간·요일은 AI가 아니라 코드가 만듭니다.
 // ------------------------------------------------------------
-const CARD_SCHEMA = `{
-  "generated_at": "(코드가 채움 — 비워두세요)",
-  "range_label": "예: 10.7(수) – 11.2(월)",
-  "weeks": [
-    { "label": "예: 10월 셋째주", "range": "10.12(월) – 10.18(일)", "note": "한두 문장 요약",
-      "cards": [
-        { "day": "날짜·요일 또는 '날짜 미정 · ~~'", "severity": "risk|caution|watch", "sevLabel": "위험|주의|모니터링",
-          "title": "한 줄 제목",
-          "schedule": "시간·장소·기관·진행 방식까지. 근거에 없는 시각·장소는 쓰지 말 것",
-          "trend": "근거에 있는 보도·여론만. 수치는 주체(야당 주장 등) 병기",
-          "outlook": "전망. 이전 판과 달라진 점은 '(지난 업데이트 대비: ~~)'",
-          "action": "담당자 체크포인트",
-          "confidence": "확인됨 | 보도 기준 | 제보·미확인 | 재확인 필요",
-          "sources": [ { "label": "언론사", "url": "근거 목록에 있는 URL만" } ] } ] } ]
+const ORD = ['', '첫째', '둘째', '셋째', '넷째', '다섯째'];
+const mmdd = (dt) => `${dt.getUTCMonth() + 1}.${dt.getUTCDate()}(${DOW[dt.getUTCDay()]})`;
+const isoOf = (dt) => dt.toISOString().slice(0, 10);
+
+function buildWeekSlots(now, count = 5) {
+  const t = kstParts(now);
+  const today = new Date(Date.UTC(t.y, t.m - 1, t.d));
+  const dow = today.getUTCDay();
+  const monday = new Date(today.getTime() - ((dow + 6) % 7) * 86400000);
+  const slots = [];
+  for (let i = 0; i < count; i++) {
+    const start = new Date(monday.getTime() + i * 7 * 86400000);
+    const end = new Date(start.getTime() + 6 * 86400000);
+    const thu = new Date(start.getTime() + 3 * 86400000);
+    const label = `${thu.getUTCMonth() + 1}월 ${ORD[Math.ceil(thu.getUTCDate() / 7)]}주` + (i === 0 ? ' (이번 주)' : '');
+    slots.push({ start: isoOf(start), end: isoOf(end), label, range: `${mmdd(start)} – ${mmdd(end)}`, findings: [] });
+  }
+  return { slots, thisMonday: isoOf(monday) };
+}
+
+function assignFindings(slots, findings, thisMonday) {
+  findings.forEach(f => {
+    const d = (f.event_date_iso || '').slice(0, 10);
+    let idx = 0; // 날짜 미정 → 이번 주에 "날짜 미정"으로 표시
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      if (d < thisMonday) idx = 0;
+      else {
+        idx = slots.findIndex(sl => d >= sl.start && d <= sl.end);
+        if (idx === -1) idx = d > slots[slots.length - 1].end ? slots.length - 1 : 0;
+      }
+    }
+    slots[idx].findings.push(f);
+  });
+}
+
+const WEEK_SCHEMA = `{
+  "note": "이 주차를 한두 문장으로 요약",
+  "cards": [
+    { "day": "날짜·요일(날짜표 기준) 또는 '날짜 미정 · ~~'", "severity": "risk|caution|watch", "sevLabel": "위험|주의|모니터링",
+      "title": "한 줄 제목",
+      "schedule": "시간·장소·기관·진행 방식까지. 근거에 없는 시각·장소는 쓰지 말 것",
+      "trend": "근거에 있는 보도·여론만. 수치는 주체(야당 주장 등) 병기",
+      "outlook": "전망. 이전 판과 달라진 점은 '(지난 업데이트 대비: ~~)'",
+      "action": "담당자 체크포인트",
+      "confidence": "확인됨 | 보도 기준 | 제보·미확인 | 재확인 필요",
+      "sources": [ { "label": "언론사", "url": "근거 목록에 있는 URL만" } ] }
+  ]
 }`;
 
-function composePrompt(ctx, findings) {
-  return `오늘은 ${ctx.todayKST}(한국시간)입니다. 아래 "근거 목록"만 사용해 정책 레이더 카드를 작성하세요.
+function composePrompt(ctx, slot) {
+  return `오늘은 ${ctx.todayKST}(한국시간)입니다. 아래 "근거 목록"만 사용해 정책 레이더의 한 주차(${slot.label}, ${slot.range})에 들어갈 카드를 작성하세요.
 
 [날짜표 — 요일은 이 표를 따르세요]
 ${ctx.calendar}
 
 [작성 규칙]
 - 근거 목록에 없는 사실·수치·날짜·시각·장소는 쓰지 마세요. 기억으로 보충 금지.
-- 이전 판의 문구를 복사하지 마세요. 이전 판 주제는 근거 목록에 새로운 확인이 있을 때만 포함합니다. 새 확인이 없으면 제외하거나 confidence를 "재확인 필요"로 하고 schedule에 "이번 조사에서 재확인하지 못함"이라고 적으세요.
-- evidence_level이 headline_only인 항목은 confidence를 "보도 기준"으로 하고, 세부 내용을 단정하지 마세요.
-- status가 "완료"인 일정은 "~일 완료"로 쓰고 결과가 미확인이면 "결과 미확인"이라고 명시하세요. 이미 지난 일정을 "예정"으로 쓰지 마세요.
-- event_date_iso가 5주 밖이면 제외, 5주 안인데 주차가 없으면 주차를 추가하세요. 주차 경계는 월~일입니다.
-- 이번 주에는 오늘 이전에 끝난 일정도 맥락상 중요하면 포함하되 day에 "완료"를 명시하세요.
-- 제보 기반이면 schedule 끝에 "(담당자 제보 기반, 공식 확인 필요)"를 붙이고 confidence는 "제보·미확인".
+- 같은 사건을 다룬 근거 항목은 카드 하나로 합치세요. 카드는 최대 9개, 중요도 순.
+- 이전 판의 문구를 복사하지 마세요. 근거에 새로운 확인이 없는 이슈는 제외하세요.
+- evidence_level이 headline_only인 항목은 confidence를 "보도 기준"으로 하고 세부 내용을 단정하지 마세요.
+- status가 "완료"면 day에 "완료"를 명시하고 결과가 미확인이면 "결과 미확인"이라고 쓰세요. 지난 일정을 "예정"으로 쓰지 마세요.
+- event_date_iso가 비어 있거나 "날짜 미정"인 항목은 day를 "날짜 미정 · (설명)"으로 쓰세요.
+- 제보 기반이면 schedule 끝에 "(담당자 제보 기반, 공식 확인 필요)", confidence는 "제보·미확인".
 - 수치는 attributed_to를 병기하세요(예: "국민의힘 주장").
 - 정당·정치인에 대한 개인 견해 금지. 위험도: risk=즉각 평판·소통 리스크, caution=관리 필요 절차·논쟁, watch=일정 확인 수준.
-- sources.url은 근거 목록의 url 중에서만 고르세요.
+- 각 필드는 2~3문장 이내로 간결하게. sources.url은 근거 목록의 url 중에서만.
 
 [근거 목록 JSON]
-${JSON.stringify(findings)}
+${JSON.stringify(slot.findings)}
 
 [출력] 아래 스키마의 JSON 객체 하나만 (설명·코드펜스 금지):
-${CARD_SCHEMA}`;
+${WEEK_SCHEMA}`;
 }
 
 // ------------------------------------------------------------
-// 5) 3단계 — 독립 검증 (다른 시각에서 의심하며 재확인)
+// 5) 3단계 — 독립 검증 (주차별, 의심하며 재확인)
 // ------------------------------------------------------------
-function verifyPrompt(ctx, draft) {
-  return `오늘은 ${ctx.todayKST}(한국시간)입니다. 당신은 "팩트체크 담당 검증자"입니다. 아래 초안을 처음 보는 사람처럼 의심하며 검증하세요.
+function verifyPrompt(ctx, slot, draft) {
+  return `오늘은 ${ctx.todayKST}(한국시간)입니다. 당신은 "팩트체크 담당 검증자"입니다. 아래는 ${slot.label}(${slot.range}) 카드 초안입니다. 처음 보는 사람처럼 의심하며 검증하세요.
 
 [날짜표]
 ${ctx.calendar}
 
-[검증 항목 — 카드마다 모두 수행]
-1. 날짜·요일: 날짜표와 일치하는가? 이미 지난 일정을 "예정"으로 쓰지 않았는가?
-2. 사건의 연도: ${ctx.year - 1}년 이전 사건과 섞이지 않았는가? (같은 이름의 작년 사건 주의)
-3. 핵심 수치·고유명사·직함: 출처 기사에 실제로 있는가? 웹 검색/본문 열람으로 확인하세요. 카드마다 최소 1회 검색하고, severity가 risk인 카드는 핵심 주장 2개 이상 확인하세요.
-4. 출처 링크: 그 링크가 해당 주장을 뒷받침하는가? (제목만 비슷한 무관한 기사는 제거)
-5. 확인 불가 항목: 수치는 삭제하거나 "보도 기준(미확인)"으로 약화, 사실 자체가 확인되지 않으면 카드 삭제.
+[검증 항목 — 카드마다]
+1. 날짜·요일이 날짜표와 맞는가? 이미 지난 일정을 "예정"으로 쓰지 않았는가?
+2. ${ctx.year - 1}년 이전의 같은 이름 사건과 섞이지 않았는가?
+3. 핵심 수치·고유명사·직함이 실제 기사에 있는가? severity가 risk인 카드는 핵심 주장을 검색으로 확인하세요(검색은 최대 6회 이내로 효율적으로).
+4. 출처 링크가 그 주장을 뒷받침하는가? 무관하면 제거.
+5. 확인 불가: 수치는 삭제하거나 약화, 사실 자체가 확인 안 되면 카드 삭제.
 
 [규칙]
 - 고칠 때는 검색으로 확인한 내용만 사용. 새 URL은 이번 검색에서 열람한 것만.
-- 카드의 confidence를 검증 결과에 맞게 갱신 ("확인됨"은 2개 이상 독립 출처 또는 공식 발표로 확인된 경우에만).
-- 출력은 수정된 전체 JSON 객체(초안과 동일 스키마) 하나만, 그리고 객체 최상단에 "verification_log": ["수정·삭제한 내용 요약", ...] 배열을 추가하세요. 설명·코드펜스 금지.
+- confidence 갱신 ("확인됨"은 2개 이상 독립 출처 또는 공식 발표로 확인된 경우에만).
+- 출력은 수정된 JSON 객체(초안과 같은 스키마) 하나만. 객체 최상단에 "verification_log": ["수정·삭제 요약", ...]를 추가. 설명·코드펜스 금지.
 
 [초안]
 ${JSON.stringify(draft)}`;
@@ -403,35 +446,58 @@ async function main() {
     process.exit(1);
   }
 
-  // 2단계
-  console.log('[2단계] 카드 작성 중');
-  const draftText = await callClaude({ prompt: composePrompt(ctx, findings), maxTokens: 16000 });
-  const draft = extractJson(draftText);
-  if (!draft || !Array.isArray(draft.weeks) || !draft.weeks.length) {
-    console.error('카드 초안을 만들지 못했습니다. 원문 일부:\n', draftText.slice(0, 1500));
-    process.exit(1);
-  }
+  // 2단계: 주차별 작성
+  const { slots, thisMonday } = buildWeekSlots(now, 5);
+  assignFindings(slots, findings, thisMonday);
+  console.log('[2단계] 주차별 카드 작성 중: ' + slots.map(sl => `${sl.label}(${sl.findings.length}건)`).join(', '));
 
-  // 3단계
-  console.log('[3단계] 독립 검증 중');
-  let verified = draft;
-  let verificationLog = [];
-  const downgrade = (obj) => obj.weeks.forEach(w => (w.cards || []).forEach(c => { c.confidence = '재확인 필요'; }));
-  try {
-    const vText = await callWithResearchTools({ prompt: verifyPrompt(ctx, draft), maxTokens: 16000 });
-    const v = extractJson(vText);
-    if (v && Array.isArray(v.weeks) && v.weeks.length) {
-      verificationLog = Array.isArray(v.verification_log) ? v.verification_log : [];
-      delete v.verification_log;
-      verified = v;
-    } else {
-      verificationLog = ['검증 단계 결과를 읽지 못해 초안을 사용 — 모든 카드를 "재확인 필요"로 낮춤'];
-      downgrade(verified);
+  const weeks = [];
+  const verificationLog = [];
+  const composeGaps = [];
+  for (const slot of slots) {
+    if (!slot.findings.length) continue;
+    let draft = null;
+    for (let attempt = 1; attempt <= 2 && !draft; attempt++) {
+      try {
+        const txt = await callClaude({ prompt: composePrompt(ctx, slot), maxTokens: 12000, noThinking: true });
+        const obj = extractJson(txt);
+        if (obj && Array.isArray(obj.cards) && obj.cards.length) draft = obj;
+        else console.error(`[디버그] ${slot.label} 작성 실패(시도 ${attempt}) 종료사유=${lastStop}, 블록=${lastBlocks}, 길이=${txt.length}, 앞부분=${JSON.stringify(txt.slice(0, 300))}`);
+      } catch (e) {
+        console.error(`[디버그] ${slot.label} 작성 오류(시도 ${attempt}): ${e.message.slice(0, 200)}`);
+        if (/credit balance/i.test(e.message)) throw e; // 잔액 부족은 재시도 의미 없음
+      }
     }
-  } catch (e) {
-    verificationLog = ['검증 단계 오류: ' + e.message.slice(0, 120)];
-    downgrade(verified);
+    if (!draft) { composeGaps.push(`${slot.label}: 카드 작성 실패`); continue; }
+
+    // 3단계: 같은 주차를 별도 호출로 검증
+    let finalWeek = draft;
+    if (process.env.RADAR_VERIFY !== '0') {
+      console.log(`[3단계] 검증 중: ${slot.label}`);
+      let ok = false;
+      try {
+        const vText = await callWithResearchTools({ prompt: verifyPrompt(ctx, slot, draft), maxTokens: 12000 });
+        const v = extractJson(vText);
+        if (v && Array.isArray(v.cards) && v.cards.length) {
+          (Array.isArray(v.verification_log) ? v.verification_log : []).forEach(x => verificationLog.push(`${slot.label}: ${x}`));
+          finalWeek = v; ok = true;
+        }
+      } catch (e) {
+        if (/credit balance/i.test(e.message)) throw e;
+        verificationLog.push(`${slot.label}: 검증 오류 ${e.message.slice(0, 100)}`);
+      }
+      if (!ok) {
+        verificationLog.push(`${slot.label}: 검증 결과를 읽지 못해 초안 사용 — 카드를 "재확인 필요"로 낮춤`);
+        finalWeek.cards.forEach(c => { c.confidence = '재확인 필요'; });
+      }
+    } else {
+      finalWeek.cards.forEach(c => { c.confidence = c.confidence === '제보·미확인' ? c.confidence : '보도 기준'; });
+    }
+    weeks.push({ label: slot.label, range: slot.range, note: finalWeek.note || '', cards: finalWeek.cards });
   }
+  if (!weeks.length) { console.error('작성된 주차가 없습니다. 작성 실패:', composeGaps); process.exit(1); }
+  const verified = { generated_at: nowISO, range_label: `${mmdd(new Date(slots[0].start + 'T00:00:00Z'))} – ${mmdd(new Date(slots[slots.length - 1].end + 'T00:00:00Z'))}`, weeks };
+  gaps.push(...composeGaps);
 
   // 4단계
   const report = codeValidate(verified, ctx);
