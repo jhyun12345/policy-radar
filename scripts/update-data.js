@@ -76,6 +76,7 @@ function collectUrls(blocks) {
   }
 }
 
+let lastStop = '';
 async function callClaude({ prompt, tools, maxTokens = 8000, betaHeaders = [] }) {
   const messages = [{ role: 'user', content: prompt }];
   let allText = '';
@@ -93,6 +94,7 @@ async function callClaude({ prompt, tools, maxTokens = 8000, betaHeaders = [] })
     if (!res.ok) throw new Error(`Anthropic API 오류 (${res.status}): ${await res.text()}`);
     const data = await res.json();
     collectUrls(data.content);
+    lastStop = data.stop_reason || '';
     allText += (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n') + '\n';
 
     if (data.stop_reason === 'pause_turn') {
@@ -104,11 +106,40 @@ async function callClaude({ prompt, tools, maxTokens = 8000, betaHeaders = [] })
   return allText.trim();
 }
 
+// 모델 답변 속에서 JSON을 찾아냅니다. 앞뒤에 설명 문장이 붙어 있거나, 본문에 [1] 같은
+// 대괄호가 섞여 있어도 "괄호 짝이 맞는 덩어리"를 하나씩 시험해서 읽히는 가장 큰 것을 씁니다.
 function extractJson(text, open = '{', close = '}') {
-  const cleaned = text.replace(/```json/gi, '').replace(/```/g, '');
-  const s = cleaned.indexOf(open), e = cleaned.lastIndexOf(close);
-  if (s === -1 || e === -1 || e < s) return null;
-  try { return JSON.parse(cleaned.slice(s, e + 1)); } catch (err) { return null; }
+  if (!text) return null;
+  const src = text.replace(/```json/gi, '').replace(/```/g, '');
+  let best = null;
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== open) continue;
+    // 배열은 바로 뒤가 { 또는 ] 일 때만 JSON 후보로 봅니다 ([1] 같은 각주 표시 제외)
+    if (open === '[') {
+      const nxt = src.slice(i + 1).trimStart()[0];
+      if (nxt !== '{' && nxt !== ']') continue;
+    }
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = i; j < src.length; j++) {
+      const ch = src[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === open) depth++;
+      else if (ch === close) { depth--; if (depth === 0) { end = j; break; } }
+    }
+    if (end === -1) continue;
+    try {
+      const parsed = JSON.parse(src.slice(i, end + 1));
+      if (!best || (end - i) > best.len) best = { value: parsed, len: end - i };
+    } catch (e) { /* 다음 후보로 */ }
+    i = end; // 이미 검사한 덩어리는 건너뜀
+  }
+  return best ? best.value : null;
 }
 
 const SEARCH_TOOLS = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }];
@@ -198,7 +229,7 @@ ${ctx.previousTopics}
 6. 기억·추정으로 채우지 마세요. 못 찾았으면 "찾지 못함"이라고 적는 것이 정답입니다.
 7. url은 이번 검색에서 실제로 열람/검색된 주소만 쓰세요.
 
-출력은 아래 형식의 JSON 배열 "하나만" (다른 말·코드펜스 금지). 항목은 8~20개:
+검색하는 동안에는 설명 문장을 쓰지 말고, 조사가 모두 끝난 뒤 맨 마지막에 아래 형식의 JSON 배열 "하나만" 출력하세요(앞뒤 설명·코드펜스·각주 표시 금지). 항목은 8~14개, 각 문자열은 간결하게:
 [
   {
     "topic": "한 줄 주제",
@@ -221,9 +252,14 @@ async function runResearch(ctx) {
     if (cat.id === 'tips' && /^\(/.test(ctx.tips)) continue; // 제보가 없으면 건너뜀
     console.log(`[1단계] 조사 중: ${cat.name}`);
     try {
-      const text = await callWithResearchTools({ prompt: researchPrompt(cat, ctx), maxTokens: 8000 });
+      const text = await callWithResearchTools({ prompt: researchPrompt(cat, ctx), maxTokens: 16000 });
       const arr = extractJson(text, '[', ']');
-      if (!Array.isArray(arr)) { gaps.push(`${cat.name}: 결과를 읽지 못함`); continue; }
+      if (!Array.isArray(arr)) {
+        gaps.push(`${cat.name}: 결과를 읽지 못함 (종료사유=${lastStop}, 응답길이=${text.length})`);
+        console.error(`[디버그] ${cat.name} 응답 앞부분: ` + JSON.stringify(text.slice(0, 500)));
+        console.error(`[디버그] ${cat.name} 응답 끝부분: ` + JSON.stringify(text.slice(-500)));
+        continue;
+      }
       arr.forEach(f => { f._cat = cat.id; findings.push(f); });
     } catch (e) {
       gaps.push(`${cat.name}: ${e.message.slice(0, 120)}`);
