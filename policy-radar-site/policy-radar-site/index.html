@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>정책 레이더 · 3주간 이슈 브리핑</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,600;1,400;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+
+<style>
+  :root{
+    --bg: #fbfaf7;
+    --bg-card: #ffffff;
+    --border: #e7e3d9;
+    --border-strong: #d7d1c1;
+    --text: #1b1e24;
+    --text-muted: #5c6270;
+    --text-faint: #96907f;
+
+    --risk: #c8392f; --risk-bg: #fbeae8;
+    --caution: #ad7318; --caution-bg: #faf0dd;
+    --watch: #257b73; --watch-bg: #e6f3f1;
+    --gold: #a1791f;
+
+    --shadow: 0 1px 2px rgba(30,25,15,0.04), 0 8px 24px rgba(30,25,15,0.05);
+    --radius-lg: 20px;
+  }
+  *{ box-sizing: border-box; }
+  html{ scroll-behavior: smooth; }
+  body{ margin:0; background: var(--bg); color: var(--text); font-family:'Pretendard',-apple-system,sans-serif; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  a{ color: inherit; }
+
+  header.top{ max-width: 1180px; margin: 0 auto; padding: 60px 28px 36px; }
+  .eyebrow-row{ display:flex; align-items:center; gap:10px; color: var(--gold); font-size: 14px; margin-bottom: 18px; }
+  .eyebrow-row .dot{ width:6px; height:6px; border-radius:50%; background: var(--gold); }
+  h1.title{ font-family:'Newsreader',serif; font-weight:600; font-style:italic; font-size: clamp(32px,5vw,50px); margin:0 0 16px; letter-spacing:-0.01em; color:#14161a; }
+  p.lede{ max-width: 660px; color: var(--text-muted); font-size:16px; margin:0 0 26px; }
+  .meta-line{ display:flex; flex-wrap:wrap; gap:10px 22px; font-size:13px; color: var(--text-faint); border-top:1px solid var(--border); padding-top:18px; }
+  .meta-line b{ color: var(--text-muted); font-weight:600; }
+
+  .filter-bar{ max-width:1180px; margin:0 auto; padding:16px 28px 18px; display:flex; flex-wrap:wrap; gap:10px; position:sticky; top:0; z-index:20; background: linear-gradient(to bottom, var(--bg) 82%, transparent); }
+  .chip{ border:1px solid var(--border-strong); background:#fff; color:var(--text-muted); padding:8px 16px; border-radius:999px; font-size:13px; cursor:pointer; transition:border-color .15s,color .15s,background .15s; display:flex; align-items:center; gap:8px; }
+  .chip .swatch{ width:8px; height:8px; border-radius:50%; }
+  .chip:hover{ border-color: var(--text-faint); color: var(--text); }
+  .chip.active{ color: var(--text); background:#f3f0e8; border-color: var(--border-strong); }
+  .chip.active[data-cat="risk"]{ border-color: var(--risk); color:var(--risk); }
+  .chip.active[data-cat="caution"]{ border-color: var(--caution); color:var(--caution); }
+  .chip.active[data-cat="watch"]{ border-color: var(--watch); color:var(--watch); }
+
+  main{ max-width:1180px; margin:0 auto; padding:6px 28px 100px; }
+  .week-divider{ display:flex; align-items:baseline; gap:18px; margin:60px 0 22px; }
+  .week-divider:first-of-type{ margin-top:14px; }
+  .week-divider .label{ font-family:'Newsreader',serif; font-style:italic; font-weight:500; font-size:26px; color:#14161a; white-space:nowrap; }
+  .week-divider .range{ color: var(--text-faint); font-size:13px; white-space:nowrap; }
+  .week-divider .rule{ flex:1; height:1px; background:var(--border); }
+  .week-note{ color: var(--text-muted); font-size:14px; margin:-10px 0 26px; max-width:720px; }
+
+  .grid{ display:grid; grid-template-columns: repeat(3,1fr); gap:20px; }
+  @media (max-width:980px){ .grid{ grid-template-columns: repeat(2,1fr); } }
+  @media (max-width:680px){ .grid{ grid-template-columns: 1fr; } header.top{ padding-top:40px; } }
+
+  .card{ background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow); padding:22px 22px 20px; display:flex; flex-direction:column; transition:transform .15s, box-shadow .15s; }
+  .card:hover{ transform: translateY(-2px); box-shadow: 0 4px 6px rgba(30,25,15,0.05), 0 14px 30px rgba(30,25,15,0.08); }
+  .card.risk{ border-top:3px solid var(--risk); }
+  .card.caution{ border-top:3px solid var(--caution); }
+  .card.watch{ border-top:3px solid var(--watch); }
+
+  .card-top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
+  .date-pill{ font-size:12.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .sev-pill{ display:flex; align-items:center; gap:6px; font-size:12px; padding:4px 10px; border-radius:999px; font-weight:600; }
+  .sev-pill .swatch{ width:6px; height:6px; border-radius:50%; }
+  .card.risk .sev-pill{ background:var(--risk-bg); color:var(--risk); }
+  .card.risk .sev-pill .swatch{ background:var(--risk); }
+  .card.caution .sev-pill{ background:var(--caution-bg); color:var(--caution); }
+  .card.caution .sev-pill .swatch{ background:var(--caution); }
+  .card.watch .sev-pill{ background:var(--watch-bg); color:var(--watch); }
+  .card.watch .sev-pill .swatch{ background:var(--watch); }
+
+  .conf{ font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--border-strong); color:var(--text-faint); margin-left:6px; white-space:nowrap; }
+  .conf.warn{ border-color:var(--caution); color:var(--caution); background:var(--caution-bg); }
+  .card h3{ font-size:18.5px; line-height:1.4; margin:0 0 14px; font-weight:700; letter-spacing:-0.01em; color:#14161a; }
+  .field{ margin-bottom:12px; }
+  .field .k{ font-size:11.5px; color: var(--text-faint); margin-bottom:4px; display:flex; align-items:center; gap:6px; font-weight:600; }
+  .field .k::before{ content:""; width:10px; height:1px; background: var(--text-faint); }
+  .field .v{ font-size:13.6px; color: var(--text-muted); }
+  .field.note .v{ color: var(--text); }
+
+  .sources{ margin-top:auto; padding-top:14px; border-top:1px solid var(--border); display:flex; flex-wrap:wrap; gap:6px; }
+  .sources a{ font-size:11.5px; color: var(--text-faint); text-decoration:none; border:1px solid var(--border); padding:4px 9px; border-radius:999px; transition:color .15s, border-color .15s; }
+  .sources a:hover{ color: var(--gold); border-color: var(--gold); }
+
+  .status{ max-width:1180px; margin:0 auto; padding:0 28px; color: var(--text-faint); font-size:13px; }
+
+  footer{ max-width:1180px; margin:0 auto; padding:40px 28px 80px; color: var(--text-faint); font-size:12.5px; border-top:1px solid var(--border); }
+
+  /* ---------------- 일정 제보 버튼 ---------------- */
+  .tip-cta{ max-width:1180px; margin:14px auto 0; padding:0 28px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .tip-button{ display:inline-flex; align-items:center; gap:8px; background: var(--gold); color:#fff; text-decoration:none; font-size:13.5px; font-weight:600; padding:10px 18px; border-radius:999px; transition: opacity .15s ease; }
+  .tip-button:hover{ opacity:0.88; }
+  .tip-hint{ color: var(--text-faint); font-size:13px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="eyebrow-row"><span class="dot"></span> 정책 커뮤니케이션 담당자를 위한 3주 브리핑</div>
+  <h1 class="title">정책 레이더</h1>
+  <p class="lede">
+    앞으로 2~3주간 예정된 국회·정부 일정과, 그 일정을 둘러싼 최근 언론·여론 동향을 묶어서 보여줍니다.
+    날짜가 못 박히지 않은 "국감 전후" "내주 중" 같은 이슈도 함께 담았습니다. 매주 화·수·목 오전 9시에 자동으로 갱신됩니다.
+  </p>
+  <div class="meta-line" id="metaLine">
+    <span>불러오는 중…</span>
+  </div>
+</header>
+
+<div class="filter-bar" id="filterBar">
+  <button class="chip active" data-cat="all">전체</button>
+  <button class="chip" data-cat="risk"><span class="swatch" style="background:#c8392f"></span>위험 · 즉각 대응 필요</button>
+  <button class="chip" data-cat="caution"><span class="swatch" style="background:#ad7318"></span>주의 · 관리 필요</button>
+  <button class="chip" data-cat="watch"><span class="swatch" style="background:#257b73"></span>모니터링 · 일정 확인</button>
+</div>
+
+<div class="tip-cta">
+  <!-- 아래 href를 본인 저장소의 "radar-tips" 라벨 이슈 주소로 바꿔주세요. (README 9단계 참고) -->
+  <a class="tip-button" href="https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/issues/1" target="_blank" rel="noopener">📝 일정 제보 남기기</a>
+  <span class="tip-hint">알고 있는 일정을 편하게 적어두면 다음 자동 업데이트에 반영됩니다.</span>
+</div>
+
+<div class="status" id="status"></div>
+<main id="main"></main>
+
+<footer>
+  본 페이지는 공개된 언론 보도를 바탕으로 클로드(Claude)가 정리한 참고 자료이며, 국회·정부 공식 일정을 대체하지 않습니다.
+  일정은 변동될 수 있으므로 실제 대응 전 반드시 국회 의사일정 및 소관 부처 공지로 재확인하시기 바랍니다.
+</footer>
+
+<script>
+/* ============================================================
+   이 페이지는 같은 폴더의 data.json 파일을 읽어서 화면을 그립니다.
+   data.json은 GitHub Actions가 화·수·목 오전 9시에 자동으로 새로 씁니다.
+   (수동으로 내용을 고치고 싶다면 data.json을 직접 편집해도 됩니다.)
+   ============================================================ */
+const main = document.getElementById('main');
+const metaLine = document.getElementById('metaLine');
+const statusEl = document.getElementById('status');
+
+function cardHTML(c){
+  const sources = (c.sources || []).map(s => `<a href="${s.url}" target="_blank" rel="noopener">${s.label}</a>`).join('');
+  return `
+    <article class="card ${c.severity}" data-sev="${c.severity}">
+      <div class="card-top">
+        <span class="date-pill">${c.day}${c.confidence ? `<span class="conf ${(c.confidence==='재확인 필요'||c.confidence==='제보·미확인')?'warn':''}">${c.confidence}</span>` : ''}</span>
+        <span class="sev-pill"><span class="swatch"></span>${c.sevLabel}</span>
+      </div>
+      <h3>${c.title}</h3>
+      <div class="field"><div class="k">일정</div><div class="v">${c.schedule}</div></div>
+      <div class="field"><div class="k">언론·여론 동향</div><div class="v">${c.trend}</div></div>
+      <div class="field"><div class="k">전망</div><div class="v">${c.outlook}</div></div>
+      <div class="field note"><div class="k">담당자 체크포인트</div><div class="v">${c.action}</div></div>
+      <div class="sources">${sources}</div>
+    </article>
+  `;
+}
+
+function renderWeeks(weeks){
+  main.innerHTML = weeks.map(w => `
+    <section class="week-section">
+      <div class="week-divider">
+        <span class="label">${w.label}</span>
+        <span class="range">${w.range}</span>
+        <span class="rule"></span>
+      </div>
+      <p class="week-note">${w.note || ''}</p>
+      <div class="grid">${(w.cards || []).map(cardHTML).join('')}</div>
+    </section>
+  `).join('');
+  applyFilter(currentFilter);
+}
+
+let currentFilter = 'all';
+function applyFilter(cat){
+  currentFilter = cat;
+  document.querySelectorAll('.card[data-sev]').forEach(el => {
+    el.style.display = (cat === 'all' || el.dataset.sev === cat) ? '' : 'none';
+  });
+}
+document.getElementById('filterBar').addEventListener('click', (e) => {
+  const btn = e.target.closest('.chip');
+  if(!btn) return;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilter(btn.dataset.cat);
+});
+
+fetch('./data.json?t=' + Date.now())
+  .then(r => {
+    if(!r.ok) throw new Error('data.json을 불러오지 못했습니다 (' + r.status + ')');
+    return r.json();
+  })
+  .then(data => {
+    const range = data.range_label ? `<span><b>대상 기간</b> ${data.range_label}</span>` : '';
+    const gen = data.generated_at ? `<span><b>마지막 자동 업데이트</b> ${new Date(data.generated_at).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'})}</span>` : '';
+    metaLine.innerHTML = `${gen}${range}<span><b>주의</b> 국회·청와대 일정은 유동적이므로 확정 여부를 반드시 재확인하세요</span>`;
+    renderWeeks(data.weeks || []);
+  })
+  .catch(err => {
+    metaLine.innerHTML = `<span>데이터를 아직 불러오지 못했습니다.</span>`;
+    statusEl.textContent = '오류: ' + err.message + ' — data.json 파일이 같은 폴더에 있는지 확인하세요.';
+  });
+</script>
+</body>
+</html>
